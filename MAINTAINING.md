@@ -63,6 +63,7 @@ bash scripts/scan-secrets.sh --all                            # 提交前自查
 3. 包先落到用户可见路径再走应用中心：
 
 ```bash
+# 先落到「应用中心能读到、你也有权限」的目录（示例，换成你自己的下载/备份目录）：
 cp dist/magpie-<ver>.fpk "<你的可写目录>/"
 # 若该目录属主机用户而非应用用户，应用用户不可写 → 走 SSH sudo cp + chown
 ```

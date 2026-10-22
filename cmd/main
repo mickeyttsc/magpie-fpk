@@ -127,13 +127,6 @@ detect_lan_ip() {
     esac
 }
 
-gen_key() {
-    local k
-    k="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 24)"
-    [ -n "$k" ] || k="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 24)"
-    printf '%s' "$k"
-}
-
 # 密钥真相源 = 包内 app/ui/config 里图标入口 URL 的 ?k=（fnOS 在安装/升级时把它
 # 解析进 PG 的 entry.url.path，PG 只在那两个时点刷新）。让运行用的 key 服从它，
 # 才能保证「图标打开时带的 key」与「web 服务认的 key」永远一致 —— 否则点图标就

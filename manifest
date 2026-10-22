@@ -1,5 +1,5 @@
 appname               = magpie
-version               = 0.1.1318-4
+version               = 0.1.1318-5
 display_name          = Magpie
 desc                  = Magpie 把所有 AI 编程 Agent（Claude Code / Codex / Gemini CLI / OpenCode）的模型与供应商收在一处：本地网关（默认 3425）同时兼容 OpenAI / Anthropic / Gemini 协议并互相转换，带路由组与额度耗尽自动切换，自带 Web 管理界面（默认 3430）。本包跟随上游 yetone/magpie 自动构建。
 maintainer            = yetone
@@ -12,5 +12,5 @@ ctl_stop              = true
 service_port          = 3430
 desktop_uidir         = ui
 desktop_applaunchname = magpie.main
-changelog             = 修复：图标改为官方原版 App 图标（从上游 magpie.icns 1024 提取的圆角方块底+黑鸟），此前误用了裸 SVG 线稿；点桌面图标不再落到「输入 key」登录页 —— 安装/升级回调把 Web 界面 key 同步进桌面入口 URL，点图标直达界面。Web 界面 http://<NAS-IP>:3430，网关 http://<NAS-IP>:3425。
+changelog             = 修复：①桌面图标改用上游原版 App 图标（.icns 1024 提取的圆角方块底+黑鸟），此前误用了裸 SVG 线稿；②点图标直达界面 —— Web 界面 key 固化进包内图标入口 URL，安装/升级时由应用中心解析进桌面入口，不再落到「输入 key」登录页；③移除三段永远以应用用户身份运行、实际改不了入口的 hook 死代码，回调只保留安装参数日志。Web 界面 3430，网关 3425。
 checksum              =

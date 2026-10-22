@@ -1,6 +1,13 @@
 #!/bin/bash
-# fnOS install 回调：Magpie 首次安装后运行（把 Web 界面 key 同步进桌面入口 URL）
-# 日志落到应用数据目录；卷号动态解析，不写死 /volN（fnOS 可能装在任意卷）。
+# fnOS install 回调 —— 只记录安装参数，供排障用（不做任何修改动作）。
+#
+# 为什么这里不"顺手把 Web 界面 key 写进桌面入口 URL"：本 hook 以【应用用户】身份运行
+# （实测 uid=937 user=magpie），而入口 URL 存在 PostgreSQL 的 trim_sac.entry 表里，
+# 只有 root 能写。早点认清这点，比留一段永远 SKIP 的代码好：
+# 入口 URL 的正确来源是包内 app/ui/config（应用中心在安装/升级时解析进 PG），
+# 所以 key 必须写在那份文件里（构建脚本负责注入，门禁负责校验两处一致）。
+#
+# 日志落到应用数据目录；卷号动态解析，不写死 /volN（fnOS 可装在任意卷）。
 APPNAME=magpie
 _ADMIN=""
 for _v in /vol[0-9]*; do
@@ -10,13 +17,5 @@ done
 mkdir -p "$_ADMIN" 2>/dev/null
 exec >> "${_ADMIN}/hook.log" 2>&1
 echo "=== install_callback $(date '+%F %T') uid=$(id -u) user=$(id -un) ==="
-echo "--- wizard params ---"
-env | grep -i '^wizard_' || echo "(none)"
-
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -x "${SELF_DIR}/sync-entry-url.sh" ]; then
-    bash "${SELF_DIR}/sync-entry-url.sh" install
-else
-    echo "skip: sync-entry-url.sh 不存在"
-fi
+env | grep -i '^wizard_' || echo "(no wizard params)"
 exit 0

@@ -89,14 +89,13 @@ cp "assets/icon_512.png" "$BUILD_ROOT/ICON.PNG"
 cp "assets/icon_512.png" "$BUILD_ROOT/ICON_256.PNG"
 
 
-# 生命周期脚本（含 sync-entry-url.sh 辅助脚本，按目录整体拷贝）
+# 生命周期脚本（按目录整体拷贝，新增 hook 自动带上）
 for f in cmd/*; do
     [ -f "$f" ] || continue
     cp "$f" "$BUILD_ROOT/cmd/$(basename "$f")"
     chmod 755 "$BUILD_ROOT/cmd/$(basename "$f")"
 done
 [ -f "$BUILD_ROOT/cmd/main" ] || { echo "::error:: 缺 cmd/main"; exit 1; }
-[ -f "$BUILD_ROOT/cmd/sync-entry-url.sh" ] || { echo "::error:: 缺 cmd/sync-entry-url.sh"; exit 1; }
 
 # ── Web 界面门禁 key 注入 ──
 # key 有两个落点，必须逐字符一致，否则点桌面图标会落到「输入 key」登录页：

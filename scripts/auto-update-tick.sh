@@ -17,12 +17,32 @@ fi
 SHA="$(python3 scripts/detect-upstream.py magpie-sha "$LATEST" 2>/dev/null)"
 printf '%s' "$SHA" | grep -qE '^[0-9a-f]{64}$' || { log "WARN magpie sha256 获取失败/格式非法，本轮跳过"; exit 0; }
 
-# ── 2. 与当前记录比对 ──
+# ── 2. 与当前记录做【版本序】比较 ──
+# ⚠️ 必须比大小，不能只比「相不相等」：上游回滚、或重发一个更旧的 tag 时，
+#    `[ "$LATEST" != "$CUR_ENV_VER" ]` 会把它当成「有新版本」，于是真去构建并
+#    发布一个比现装更旧的包 —— 跟着装就是降级。降级一律不自动跟随，留给人判断。
+ver_gt() {   # $1 比 $2 新 → 0
+    local a="${1#v}" b="${2#v}"
+    if [ -z "$a" ] || [ -z "$b" ]; then return 1; fi
+    if [ "$a" = "$b" ]; then return 1; fi
+    if [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" = "$a" ]; then return 0; fi
+    return 1
+}
+
 CUR_VER_FULL="$(grep '^version' manifest | cut -d= -f2 | tr -d ' ')"
+if [ -z "$CUR_VER_FULL" ]; then
+    log "ERROR 读不到 manifest 的 version 字段，本轮跳过（不做任何比较）"
+    exit 0
+fi
 CUR_BASE="${CUR_VER_FULL%-*}"
 CUR_BUILD="${CUR_VER_FULL##*-}"
 case "${CUR_BUILD}" in ''|*[!0-9]*) CUR_BUILD=0 ;; esac
 CUR_ENV_VER="$(grep '^MAGPIE_VERSION=' "$MAGPIE_ENV" | cut -d= -f2 | tr -d ' ')"
+
+if [ "$LATEST" != "$CUR_BASE" ] && ! ver_gt "$LATEST" "$CUR_BASE"; then
+    log "SKIP 上游最新 ${LATEST} 不高于已跟踪的 ${CUR_BASE}（疑似回滚/旧 tag 重发），不自动降级；如确需降级请手工改 manifest"
+    exit 0
+fi
 
 CHANGED=0
 [ "$LATEST" != "$CUR_ENV_VER" ] && CHANGED=1
@@ -69,6 +89,11 @@ sed -i "s/^version[[:space:]]*=.*/version               = ${NEW_VER}/" manifest
 log "新 FPK 版本: ${NEW_VER}"
 
 # ── 4. 提交并推送 ──
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    log "本地模式：当前目录不是 git 仓库，跳过提交/推送（改动已写入工作区，供检查）"
+    exit 0
+fi
+
 git config user.name "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"
 git add "$MAGPIE_ENV" manifest

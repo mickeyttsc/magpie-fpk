@@ -20,12 +20,11 @@ on:
   push:
     branches:
       - main
+  # 手动触发只做「重新构建当前 manifest 版本」。
+  # ⚠️ 不提供 version 入参：build-fpk.sh 的版本号只取自 manifest，
+  #    传一个不同版本会让产物名与后续步骤要找的名字不一致（必然失败）。
+  #    要换版本号 → 改 manifest 后 push。
   workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号（形如 0.1.1318-1；留空则用 manifest 中的版本）'
-        required: false
-        default: ''
   workflow_run:
     workflows: ["Auto-update upstream versions"]
     types: [completed]
@@ -144,13 +143,8 @@ jobs:
         id: target_version
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            TARGET_VERSION="${{ github.event.inputs.version }}"
-            echo "使用输入的版本号：$TARGET_VERSION"
-          else
-            TARGET_VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' ')"
-            echo "使用 manifest 版本号：$TARGET_VERSION"
-          fi
+          TARGET_VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' ')"
+          echo "manifest 版本号：$TARGET_VERSION"
           if ! printf '%s' "$TARGET_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
             echo "::error:: 版本号 '$TARGET_VERSION' 格式非法，应形如 0.1.1318-1"
             exit 1
@@ -227,7 +221,8 @@ jobs:
 
             > 固定版本请从对应版本 tag 的 Release 下载 `magpie-<版本>.fpk`。
 
-      - name: Publish stable release
+      # 只生成 release notes（真正发布在下一步），文案里的上游版本取自 env 锚点
+      - name: Prepare release notes
         run: |
           set -euo pipefail
           MG_VER="$(grep -E '^MAGPIE_VERSION=' config/upstream/magpie.env | cut -d= -f2)"

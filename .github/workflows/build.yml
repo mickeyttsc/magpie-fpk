@@ -250,7 +250,8 @@ jobs:
 
           ## 说明
           - 跟随上游 yetone/magpie 自动构建，产物经 sha256 固定值校验，静态链接、零运行时依赖。
-          - Web 管理界面 `http://<NAS-IP>:3430`（图标入口已内置 key，点桌面图标免登录）。
+          - 安装向导支持用户自设 Web 访问口令（留空则自动生成安全随机口令）。
+          - Web 管理界面 `http://<NAS-IP>:3430`（首次登录输入口令，浏览器记住 400 天）。
           - 网关 `http://<NAS-IP>:3425`，同时兼容 OpenAI / Anthropic / Gemini 协议；客户端 key 在界面 Gateway 页创建。
           - 安装后完整访问信息见应用数据目录 `access-info.txt`。
 

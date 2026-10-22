@@ -99,19 +99,10 @@ grep -q 'MAGPIE_ADDR=' "$TMP/cmd/main" || fail "cmd/main 未设置 MAGPIE_ADDR�
 grep -qE '"0\.0\.0\.0:\$\{GW_PORT\}"|GW_PORT=' "$TMP/cmd/main" || fail "cmd/main 缺网关端口配置"
 grep -q '3425' "$TMP/cmd/main" || fail "cmd/main 缺网关端口 3425"
 
-# ── 7b. 图标入口免登录契约：ui/config 的 ?k= 必须存在，且与 cmd/main 的
-#        DEFAULT_WEB_KEY 逐个字符相同（不一致 = 点图标落到登录页，正是踩过的坑）──
-UI_KEY="$(grep -o '?k=[A-Za-z0-9._~-]*' "$TMP/ui/config" 2>/dev/null | head -1 | sed 's/^?k=//')"
-[ -n "$UI_KEY" ] || fail "ui/config 的图标入口 url 未带 ?k=（点图标会落到输入 key 的登录页）"
-[ ${#UI_KEY} -ge 16 ] || fail "ui/config 的 ?k= 过短（${#UI_KEY} 字符，上游要求 16+）"
-MAIN_KEY="$(grep -oE '^DEFAULT_WEB_KEY="[^"]*"' "$TMP/cmd/main" | head -1 | sed 's/^DEFAULT_WEB_KEY="//; s/"$//')"
-[ -n "$MAIN_KEY" ] || fail "cmd/main 缺 DEFAULT_WEB_KEY"
-[ "$UI_KEY" = "$MAIN_KEY" ] || fail "ui/config 的 ?k=($UI_KEY) 与 cmd/main 的 DEFAULT_WEB_KEY($MAIN_KEY) 不一致"
-
 # ── 8. 向导契约 ──
 tar xzf "$FPK" -C "$TMP" wizard/install
 python3 -c "import json,sys; json.load(open('$TMP/wizard/install'))" || fail "wizard/install 不是合法 JSON"
-grep -q 'wizard_web_key' "$TMP/wizard/install" && fail "wizard/install 仍有自定义 key 输入框（会与图标入口的 ?k= 冲突）" || true
+grep -q 'wizard_web_key' "$TMP/wizard/install" || fail "wizard/install 缺少 wizard_web_key 自定义口令输入项"
 
 # ── 9. 图标分辨率（icon_64 槽位实际是 512，塞小图会发虚）──
 tar xzf "$TMP/app.tgz" -C "$TMP" ui/images/icon_64.png 2>/dev/null || true

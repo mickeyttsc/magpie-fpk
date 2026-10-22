@@ -12,5 +12,5 @@ ctl_stop              = true
 service_port          = 3430
 desktop_uidir         = ui
 desktop_applaunchname = magpie.main
-changelog             = 修复：①桌面图标改用上游原版 App 图标（.icns 1024 提取的圆角方块底+黑鸟），此前误用了裸 SVG 线稿；②点图标直达界面 —— Web 界面 key 固化进包内图标入口 URL，安装/升级时由应用中心解析进桌面入口，不再落到「输入 key」登录页；③移除三段永远以应用用户身份运行、实际改不了入口的 hook 死代码，回调只保留安装参数日志。Web 界面 3430，网关 3425。
+changelog             = 改进：①跟随上游升级至 v0.1.1322；②安装向导支持用户自定义设置 Web 访问口令（留空则自动生成随机口令）；③口令安全持久化落盘至 web.key 与 access-info.txt；④移除包内写死的访问口令，桌面入口回归标准根路径。Web 界面 3430，网关 3425。
 checksum              =

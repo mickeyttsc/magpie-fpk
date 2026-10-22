@@ -1,28 +1,36 @@
 [
   {
+    "stepTitle": "设置 Web 访问口令",
+    "items": [
+      { "type": "tips", "helpText": "Magpie Web 管理界面用于配置模型供应商（API Key、订阅登录）与网关路由，必须设置访问口令以保障安全。" },
+      { "type": "tips", "helpText": "请设置 16–64 位的访问口令（支持字母、数字、点、下划线、短横线与波浪线）。留空则会在安装时自动生成随机口令。" },
+      { "type": "tips", "helpText": "口令与访问地址会持久化保存在应用数据目录的 access-info.txt 与 web.key 中，首次打开 Web 界面或换设备时输入此口令即可登录（浏览器会自动保存 400 天）。" },
+      {
+        "type": "password",
+        "field": "wizard_web_key",
+        "label": "Web 访问口令（留空则自动生成）",
+        "initValue": "",
+        "rules": [
+          { "pattern": "^(|[A-Za-z0-9._~-]{16,64})$", "message": "口令需为 16–64 位字符（支持字母、数字及 . _ ~ -）；留空则自动生成随机口令" }
+        ]
+      }
+    ]
+  },
+  {
     "stepTitle": "怎么用 Magpie",
     "items": [
       { "type": "tips", "helpText": "Magpie 是给所有 AI 编程 Agent 统一选模型的地方：Claude Code 跑 Kimi、Codex 跑 DeepSeek、Gemini CLI 跑 GLM，全都在这一个界面里切。" },
       { "type": "tips", "helpText": "它在本机跑一个网关（默认 3425 端口），同时支持 OpenAI / Anthropic / Gemini 三种协议并互相转换，所以任何 Agent、任何客户端都能接。" },
-      { "type": "tips", "helpText": "装好后打开『Magpie』图标就是 Web 管理界面，在里面添加供应商（填 API Key 或登录订阅）即可。" }
-    ]
-  },
-  {
-    "stepTitle": "Web 界面密钥（已预先配好）",
-    "items": [
-      { "type": "tips", "helpText": "上游 magpie 的 Web 界面必须有密钥才能进入（防止别人改你的供应商配置）。" },
-      { "type": "tips", "helpText": "本包已把密钥 magpie-Mickey-2026 写进桌面图标入口 URL，点图标直接进界面，无需手动输入。" },
-      { "type": "tips", "helpText": "密钥同时记在应用数据目录的 access-info.txt 与 web.key 里，换设备/换浏览器时可用。" },
-      { "type": "tips", "helpText": "要换密钥：同时改 app/ui/config 里的 ?k= 与 cmd/main 的 DEFAULT_WEB_KEY（两者必须一致），否则点图标会落到登录页。" }
+      { "type": "tips", "helpText": "装好后打开『Magpie』桌面图标，输入口令登录进入 Web 管理界面，在里面添加供应商（填 API Key 或登录订阅）即可。" }
     ]
   },
   {
     "stepTitle": "装完之后（3 步）",
     "items": [
-      { "type": "tips", "helpText": "1. 打开『Magpie』图标直接进 Web 界面（无需输入任何密钥）；" },
+      { "type": "tips", "helpText": "1. 打开『Magpie』图标，输入设置好的口令登录（浏览器自动记住 400 天）；" },
       { "type": "tips", "helpText": "2. Providers → 添加你的供应商：Kimi / DeepSeek / GLM 填 API Key；Claude / ChatGPT 走订阅登录；" },
       { "type": "tips", "helpText": "3. Gateway → 给每个客户端建一个网关 key，客户端把 base URL 指向 http://NAS的IP:3425 即可。" },
-      { "type": "tips", "helpText": "全部地址、密钥与用法都记录在应用数据目录的 access-info.txt。" }
+      { "type": "tips", "helpText": "全部地址、口令与用法都记录在应用数据目录的 access-info.txt 中。" }
     ]
   }
 ]

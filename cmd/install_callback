@@ -1,14 +1,8 @@
 #!/bin/bash
-# fnOS install 回调 —— 只记录安装参数，供排障用（不做任何修改动作）。
-#
-# 为什么这里不"顺手把 Web 界面 key 写进桌面入口 URL"：本 hook 以【应用用户】身份运行
-# （实测 uid=937 user=magpie），而入口 URL 存在 PostgreSQL 的 trim_sac.entry 表里，
-# 只有 root 能写。早点认清这点，比留一段永远 SKIP 的代码好：
-# 入口 URL 的正确来源是包内 app/ui/config（应用中心在安装/升级时解析进 PG），
-# 所以 key 必须写在那份文件里（构建脚本负责注入，门禁负责校验两处一致）。
-#
-# 日志落到应用数据目录；卷号动态解析，不写死 /volN（fnOS 可装在任意卷）。
-APPNAME=magpie
+# fnOS install 回调 —— 保存向导输入的 Web 访问口令（若有）
+set -u
+
+APPNAME="magpie"
 _ADMIN=""
 for _v in /vol[0-9]*; do
     [ -d "${_v}/@appdata/${APPNAME}" ] && _ADMIN="${_v}/@appdata/${APPNAME}" && break
@@ -16,6 +10,17 @@ done
 [ -n "$_ADMIN" ] || _ADMIN="${TRIM_PKGVAR:-/tmp}"
 mkdir -p "$_ADMIN" 2>/dev/null
 exec >> "${_ADMIN}/hook.log" 2>&1
+
 echo "=== install_callback $(date '+%F %T') uid=$(id -u) user=$(id -un) ==="
 env | grep -i '^wizard_' || echo "(no wizard params)"
+
+# 若用户在向导中设置了口令（且未存在旧 key），预写入 web.key
+if [ -n "${wizard_web_key:-}" ]; then
+    if [ ! -s "${_ADMIN}/web.key" ]; then
+        printf '%s\n' "$wizard_web_key" > "${_ADMIN}/web.key"
+        chmod 600 "${_ADMIN}/web.key" 2>/dev/null || true
+        echo "已从向导初始化 web.key"
+    fi
+fi
+
 exit 0

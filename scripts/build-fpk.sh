@@ -97,42 +97,11 @@ for f in cmd/*; do
 done
 [ -f "$BUILD_ROOT/cmd/main" ] || { echo "::error:: 缺 cmd/main"; exit 1; }
 
-# ── Web 界面门禁 key 注入 ──
-# key 有两个落点，必须逐字符一致，否则点桌面图标会落到「输入 key」登录页：
-#   1. app/ui/config 的入口 url（fnOS 安装/升级时解析进 PG 的 entry.url.path）
-#   2. cmd/main 的 DEFAULT_WEB_KEY（运行期 magpie web 认的值）
-# 取值优先级：环境变量 MAGPIE_WEB_KEY > config/web-key.env
-KEY_ENV_FILE="config/web-key.env"
-DEFAULT_KEY="$(pin MAGPIE_WEB_KEY "$KEY_ENV_FILE" 2>/dev/null || true)"
-WEB_KEY="${MAGPIE_WEB_KEY:-$DEFAULT_KEY}"
-printf '%s' "$WEB_KEY" | grep -qE '^[A-Za-z0-9._~-]{16,64}$' \
-    || { echo "::error:: Web 界面 key 非法（需 16–64 位字母数字或 . _ ~ -）：'$WEB_KEY'"; exit 1; }
-echo "Web 界面 key: ${WEB_KEY}"
+# ── Web 界面门禁 key 处理 ──
+# 现在的方案采用上游标准行为：安装向导中由用户自行设置口令（留空则首次运行自动生成随机口令）。
+# 图标入口 url 固定为 /（小窗），用户首次访问在登录框输入口令即可（浏览器保持 400 天）。
+# 不再向 ui/config 注入写死的 ?k=。
 
-python3 - "$BUILD_ROOT/app/ui/config" "$BUILD_ROOT/cmd/main" "$WEB_KEY" <<'PY'
-import json, re, sys
-ui_config, main_sh, key = sys.argv[1], sys.argv[2], sys.argv[3]
-
-with open(ui_config, encoding='utf-8') as f:
-    cfg = json.load(f)
-entries = cfg.get('.url') or {}
-if not entries:
-    sys.exit('::error:: ui/config 里没有 .url 条目')
-for name, ent in entries.items():
-    ent['url'] = '/?k=%s' % key
-with open(ui_config, 'w', encoding='utf-8', newline='\n') as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=2)
-    f.write('\n')
-
-with open(main_sh, encoding='utf-8') as f:
-    src = f.read()
-new, n = re.subn(r'^DEFAULT_WEB_KEY="[^"]*"', 'DEFAULT_WEB_KEY="%s"' % key, src, count=1, flags=re.M)
-if n != 1:
-    sys.exit('::error:: cmd/main 里没找到 DEFAULT_WEB_KEY="..."')
-with open(main_sh, 'w', encoding='utf-8', newline='\n') as f:
-    f.write(new)
-print('  key 已注入 ui/config 与 cmd/main')
-PY
 
 # 外层 config / wizard
 cp "config/privilege" "$BUILD_ROOT/config/privilege"

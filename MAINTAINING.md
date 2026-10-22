@@ -30,18 +30,11 @@ bash scripts/scan-secrets.sh --all                            # 提交前自查
 
 ## 封装层的三个关键契约（改前必读）
 
-### 1. 点图标必须免登录
+### 1. Web 界面安全访问契约
 
-上游 `magpie web` 对**没有 cookie 的浏览器一律 401**，落到「Paste the key」登录页。而 fnOS 桌面图标打开的是 PG 表 `trim_sac.entry` 里 `url.path` 这一段——该值**只在安装/升级时从包内 `app/ui/config` 解析一次**。
-
-实测两条硬事实：
-
-- 改已装实例的 `ui/config` 并重启应用，**不会**刷新 PG（PG 里仍是旧 path）；
-- install/upgrade 回调以**应用用户**身份运行（实测 `uid=937 user=magpie`），没有 root，**改不了 PG**。
-
-所以唯一可持续做法是：把 key 写死在包内 `ui/config` 的 `url`（`/?k=xxx`），运行期服的 key 也服从它。`cmd/main` 的 `ensure_key()` 先 `grep ui/config` 的 `?k=`，再退回 `web.key`；`build-fpk.sh` 构建时把同一个 key 同时注入 `ui/config` 与 `cmd/main` 的 `DEFAULT_WEB_KEY`；`verify-fpk-gates.sh` 第 7b 项断言两者逐字符一致，不一致直接构建失败。
-
-⚠️ `wizard/install` 里**不要**再放自定义 key 输入框：用户填的值会与图标入口的 `?k=` 打架（门禁第 8 项会拒）。
+- 安装向导（`wizard/install`）支持用户自设 Web 访问口令（留空则首次运行自动生成随机口令）。
+- 图标入口 `app/ui/config` 的 `url` 为 `/`。用户首次打开桌面图标时在登录框粘贴口令完成登录，浏览器会自动保存 400 天 Cookie，后续无需反复输入。
+- 口令及完整直达链接同时落盘到应用数据目录的 `access-info.txt` 与 `web.key`。
 
 ### 2. 用户数据必须在包外
 

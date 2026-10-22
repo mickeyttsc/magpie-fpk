@@ -15,10 +15,10 @@
 APPNAME="magpie"
 DEFAULT_WEB_PORT="3430"
 DEFAULT_GW_PORT="3425"
-# Web 界面 key 固定值，必须与 app/ui/config 里图标入口 URL 的 ?k= 一致：
-# fnOS 图标打开的是 entry.url.path（安装/升级时由 ui/config 解析进 PG），
-# 只有 path 自带 key，点图标才不会落到「输入 key」登录页。
-DEFAULT_WEB_KEY="magpie-Mickey-2026"
+# Web 界面 key 持久化与生成逻辑：
+# 优先读取已持久化的 web.key（如向导写入或上次启动生成）；
+# 首次安装若未设置，则自动生成安全随机口令并持久化。
+DEFAULT_WEB_KEY=""
 
 _resolve_trim_paths() {
     local appname="${TRIM_APPNAME:-$APPNAME}"
@@ -127,37 +127,42 @@ detect_lan_ip() {
     esac
 }
 
-# 密钥真相源 = 包内 app/ui/config 里图标入口 URL 的 ?k=（fnOS 在安装/升级时把它
-# 解析进 PG 的 entry.url.path，PG 只在那两个时点刷新）。让运行用的 key 服从它，
-# 才能保证「图标打开时带的 key」与「web 服务认的 key」永远一致 —— 否则点图标就
-# 落到登录页。web.key 只是缓存；两者不一致时以 ui/config 为准并重写缓存。
-UI_CONF="${TRIM_APPDEST}/ui/config"
-
-ui_conf_key() {
-    grep -o '?k=[A-Za-z0-9._~-]*' "$UI_CONF" 2>/dev/null | head -1 | sed 's/^?k=//'
+generate_random_key() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 16
+    elif [ -r /dev/urandom ]; then
+        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32
+    else
+        date +%s%N | md5sum | head -c 32
+    fi
 }
 
 ensure_key() {
-    local cfg_key
-    cfg_key="$(ui_conf_key)"
-    if [ -n "$cfg_key" ]; then
-        WEB_KEY="$cfg_key"
-        if [ "$(cat "$KEY_FILE" 2>/dev/null)" != "$cfg_key" ]; then
-            mkdir -p "$TRIM_PKGVAR" 2>/dev/null
-            printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
-            chmod 600 "$KEY_FILE" 2>/dev/null || true
-        fi
-    else
-        if [ -s "$KEY_FILE" ]; then
-            WEB_KEY="$(tr -d ' \r\n' < "$KEY_FILE" 2>/dev/null)"
-        fi
-        if [ -z "$WEB_KEY" ]; then
-            WEB_KEY="$DEFAULT_WEB_KEY"
-            mkdir -p "$TRIM_PKGVAR" 2>/dev/null
-            printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
-            chmod 600 "$KEY_FILE" 2>/dev/null || true
-        fi
+    # 1. 优先读取持久化的 KEY_FILE（安装向导写入或历史生成）
+    if [ -s "$KEY_FILE" ]; then
+        WEB_KEY="$(tr -d ' \r\n' < "$KEY_FILE" 2>/dev/null)"
     fi
+
+    # 2. 检查安装向导环境变量（若向导传了且 KEY_FILE 尚为空）
+    if [ -z "$WEB_KEY" ] && [ -n "${wizard_web_key:-}" ]; then
+        WEB_KEY="$wizard_web_key"
+    fi
+
+    # 3. 兜底默认值
+    if [ -z "$WEB_KEY" ] && [ -n "$DEFAULT_WEB_KEY" ]; then
+        WEB_KEY="$DEFAULT_WEB_KEY"
+    fi
+
+    # 4. 首次安装未填口令：自动生成随机口令
+    if [ -z "$WEB_KEY" ]; then
+        WEB_KEY="$(generate_random_key)"
+    fi
+
+    # 持久化落盘
+    mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+    printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
+    chmod 600 "$KEY_FILE" 2>/dev/null || true
+
     [ -n "$WEB_KEY" ]
 }
 
@@ -169,8 +174,13 @@ write_access_info() {
     cat > "$INFO_FILE" <<EOF
 Magpie 访问信息（本文件由应用在启动时生成，可删除）
 ====================================================
-Web 管理界面（点一次即登录，浏览器记住 400 天）：
+Web 管理界面（首次打开请在登录框输入口令，浏览器记住 400 天）：
+    http://${lan_ip}:${PORT}
+    或免登直达链接：
     http://${lan_ip}:${PORT}/?k=${WEB_KEY}
+
+Web 访问口令：
+    ${WEB_KEY}
 
 网关地址（OpenAI / Anthropic / Gemini 三种协议都支持）：
     http://${lan_ip}:${GW_PORT}          OpenAI 兼容
@@ -179,7 +189,7 @@ Web 管理界面（点一次即登录，浏览器记住 400 天）：
 
 数据目录：${TRIM_PKGVAR}
     供应商 / 密钥 / 订阅登录态 / 路由组都在 ${HOME_DIR} 下
-    Web 界面钥匙：${KEY_FILE}（删除后重启会重新生成）
+    Web 界面口令文件：${KEY_FILE}
 日志：${LOG_FILE}
 
 常用命令（SSH）：

@@ -36,7 +36,7 @@
 | 项 | 上游原版 | 本包 |
 |---|---|---|
 | 运行形态 | 菜单栏 App / TUI / CLI / Docker | 应用中心 fpk，常驻后台服务 + 桌面 iframe 图标 |
-| Web 界面 | 每次启动随机 key，需要手动粘一次 | key 固化进图标入口 URL，点图标直达 |
+| Web 界面 | 每次启动随机 key，需要手动粘一次 | 安装向导支持自定义口令（留空自动随机生成），持久化保存 |
 | 数据位置 | `~/.config/magpie` 等 | `/vol<N>/@apphome/magpie/`（升级/重装不丢） |
 | 主程序 | `magpie-cli-linux-amd64` | 同一个二进制，sha256 固定值校验 |
 
@@ -49,14 +49,6 @@ bash scripts/build-fpk.sh dist
 bash scripts/verify-fpk-gates.sh dist/magpie-<版本>.fpk
 python3 scripts/validate-gh-workflows.py .github/workflows   # 改 workflow 后先跑
 ```
-
-想用自己的 Web 界面 key（默认用 `config/web-key.env`）：
-
-```bash
-MAGPIE_WEB_KEY=my-own-key-2026 bash scripts/build-fpk.sh dist
-```
-
-⚠️ Release 附件是公开下载的，包内 `ui/config` 里的 key 谁都能解包读出来，**不要把它当能对公网暴露的秘密**。需要真正的访问控制，请在外层反代上做认证。
 
 ## 自动跟随上游
 

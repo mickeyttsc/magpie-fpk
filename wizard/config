@@ -1,0 +1,10 @@
+[
+  {
+    "stepTitle": "配置说明",
+    "items": [
+      { "type": "tips", "helpText": "Magpie 的全部配置（供应商、密钥、路由组、网关 key）都在 Web 界面里改，本页只作说明。" },
+      { "type": "tips", "helpText": "打开『Magpie』图标进入界面；登录链接与网关地址见数据目录 access-info.txt。" },
+      { "type": "tips", "helpText": "忘记 Web 界面密钥时：删除数据目录下的 web.key 后重启应用，会重新生成一个新密钥。" }
+    ]
+  }
+]

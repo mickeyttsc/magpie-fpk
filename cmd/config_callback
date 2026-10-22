@@ -1,0 +1,19 @@
+#!/bin/bash
+# fnOS config 回调：Magpie 配置变更后运行（把 Web 界面 key 同步进桌面入口 URL）
+# 日志落到应用数据目录；卷号动态解析，不写死 /volN（fnOS 可能装在任意卷）。
+APPNAME=magpie
+_ADMIN=""
+for _v in /vol[0-9]*; do
+    [ -d "${_v}/@appdata/${APPNAME}" ] && _ADMIN="${_v}/@appdata/${APPNAME}" && break
+done
+[ -n "$_ADMIN" ] || _ADMIN="${TRIM_PKGVAR:-/tmp}"
+mkdir -p "$_ADMIN" 2>/dev/null
+exec >> "${_ADMIN}/hook.log" 2>&1
+echo "=== config_callback $(date '+%F %T') uid=$(id -u) user=$(id -un) ==="
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "${SELF_DIR}/sync-entry-url.sh" ]; then
+    bash "${SELF_DIR}/sync-entry-url.sh" config
+else
+    echo "skip: sync-entry-url.sh 不存在"
+fi
+exit 0

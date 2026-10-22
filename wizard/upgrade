@@ -1,0 +1,10 @@
+[
+  {
+    "stepTitle": "升级说明",
+    "items": [
+      { "type": "tips", "helpText": "升级只更新 Magpie 主程序，你的供应商、密钥、路由组与网关 key 全部保留。" },
+      { "type": "tips", "helpText": "Web 界面地址、登录密钥与网关端口保持不变（3425 / 3430）。" },
+      { "type": "tips", "helpText": "升级完成后服务会自动重启，无需手动操作。" }
+    ]
+  }
+]

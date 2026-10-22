@@ -1,0 +1,3 @@
+#!/bin/bash
+# fnOS lifecycle hook (no-op) —— Magpie 的安装/启动逻辑都在 cmd/main 的启动引导里
+exit 0

@@ -1,0 +1,327 @@
+#!/bin/bash
+# Magpie — fnOS 生命周期脚本（start / stop / status）
+#
+# 设计要点（改前先读）：
+#   1. HOME / XDG_* 全部重定向到包数据目录：magpie 把供应商、密钥、订阅登录态写在
+#      $HOME/.config/magpie 等路径下，不重定向就会落到系统 home（升级/重装即丢）。
+#   2. Web 界面密钥（MAGPIE_WEB_KEY）落盘持久化：上游要求 16+ 字符，不设则每次启动
+#      换新 key（已登录的浏览器全部失效）。首次安装取向导值，否则生成随机值并写入
+#      $TRIM_PKGVAR/web.key，之后每次启动都读这同一份。
+#   3. 双端口：3430 = Web 界面（manifest service_port），3425 = 网关（给 Agent/客户端调）。
+#      两个端口都要检查占用，占用者是自己的旧进程才放行。
+#   4. 进程清理只用【路径锚定】的 pkill（$BIN 绝对路径），绝不宽泛匹配关键字。
+#   5. TRIM_* 一律先判非空；缺失时从 /var/apps/<app> 符号链接反推，不写死卷号。
+
+APPNAME="magpie"
+DEFAULT_WEB_PORT="3430"
+DEFAULT_GW_PORT="3425"
+# Web 界面 key 固定值，必须与 app/ui/config 里图标入口 URL 的 ?k= 一致：
+# fnOS 图标打开的是 entry.url.path（安装/升级时由 ui/config 解析进 PG），
+# 只有 path 自带 key，点图标才不会落到「输入 key」登录页。
+DEFAULT_WEB_KEY="magpie-Mickey-2026"
+
+_resolve_trim_paths() {
+    local appname="${TRIM_APPNAME:-$APPNAME}"
+    local appdir="" vol="" v
+    appdir="$(readlink -f "/var/apps/${appname}/target" 2>/dev/null || true)"
+    [ -z "$appdir" ] && appdir="$(readlink -f "/var/apps/${appname}" 2>/dev/null || true)"
+    case "$appdir" in
+        /vol[0-9]*/@appcenter/*) vol="$(printf '%s' "$appdir" | cut -d/ -f2)" ;;
+    esac
+    if [ -z "$vol" ]; then
+        for v in /vol[0-9]*; do
+            [ -d "${v}/@appcenter/${appname}" ] && vol="${v#/}" && break
+        done
+    fi
+    [ -z "$vol" ] && vol="vol2"
+    : "${TRIM_APPDEST:=${appdir:-/${vol}/@appcenter/${appname}}}"
+    : "${TRIM_PKGVAR:=/${vol}/@appdata/${appname}}"
+    : "${TRIM_PKGHOME:=/${vol}/@apphome/${appname}}"
+    : "${TRIM_PKGETC:=/${vol}/@appconf/${appname}}"
+    : "${TRIM_PKGTMP:=/${vol}/@apptemp/${appname}}"
+}
+
+_resolve_trim_paths
+
+PORT="${TRIM_SERVICE_PORT:-$DEFAULT_WEB_PORT}"
+[ -z "$PORT" ] && PORT="$DEFAULT_WEB_PORT"
+GW_PORT="$DEFAULT_GW_PORT"
+
+BIN="${TRIM_APPDEST}/bin/magpie"
+HOME_DIR="${TRIM_PKGHOME}"
+KEY_FILE="${TRIM_PKGVAR}/web.key"
+PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
+LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
+INFO_FILE="${TRIM_PKGVAR}/access-info.txt"
+START_ERR_LOG="${TRIM_TEMP_LOGFILE:-${TRIM_PKGTMP}/start.log}"
+
+WEB_KEY=""
+
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 端口是否被占用（查监听表 = 内核事实）
+port_in_use() {
+    local port="$1" listing=""
+    if command -v ss >/dev/null 2>&1; then
+        listing="$(ss -ltn 2>/dev/null | awk 'NR>1 {print $4}')"
+    elif command -v netstat >/dev/null 2>&1; then
+        listing="$(netstat -ltn 2>/dev/null | awk 'NR>2 {print $4}')"
+    fi
+    if [ -n "$listing" ]; then
+        printf '%s\n' "$listing" | grep -qE "[:.]${port}\$" && return 0
+        return 1
+    fi
+    return 1
+}
+
+# 占用端口的进程是否是我们自己的旧实例（cmdline 含 $BIN 绝对路径）
+port_owner_is_self() {
+    local port="$1" pids pid cmd
+    command -v ss >/dev/null 2>&1 || return 1
+    pids="$(ss -ltnp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+    [ -z "$pids" ] && return 1
+    for pid in $pids; do
+        cmd="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *"$BIN"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Web 界面就绪：带 key 的登录链接应答 200/303 才算活（不带 key 恒 401，不能当判据）
+service_ready() {
+    local code
+    command -v curl >/dev/null 2>&1 || return 1
+    [ -n "$WEB_KEY" ] || return 1
+    code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://127.0.0.1:${PORT}/?k=${WEB_KEY}" 2>/dev/null)"
+    case "$code" in
+        200|303) return 0 ;;
+    esac
+    return 1
+}
+
+gateway_ready() {
+    local code
+    command -v curl >/dev/null 2>&1 || return 1
+    code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://127.0.0.1:${GW_PORT}/v1/models" 2>/dev/null)"
+    [ "$code" = "200" ] && return 0
+    return 1
+}
+
+detect_lan_ip() {
+    local ip
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -o 'src [0-9.]*' | awk '{print $2}')"
+    case "$ip" in
+        192.168.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) echo "$ip" ;;
+        *) echo "" ;;
+    esac
+}
+
+gen_key() {
+    local k
+    k="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 24)"
+    [ -n "$k" ] || k="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 24)"
+    printf '%s' "$k"
+}
+
+# 密钥真相源 = 包内 app/ui/config 里图标入口 URL 的 ?k=（fnOS 在安装/升级时把它
+# 解析进 PG 的 entry.url.path，PG 只在那两个时点刷新）。让运行用的 key 服从它，
+# 才能保证「图标打开时带的 key」与「web 服务认的 key」永远一致 —— 否则点图标就
+# 落到登录页。web.key 只是缓存；两者不一致时以 ui/config 为准并重写缓存。
+UI_CONF="${TRIM_APPDEST}/ui/config"
+
+ui_conf_key() {
+    grep -o '?k=[A-Za-z0-9._~-]*' "$UI_CONF" 2>/dev/null | head -1 | sed 's/^?k=//'
+}
+
+ensure_key() {
+    local cfg_key
+    cfg_key="$(ui_conf_key)"
+    if [ -n "$cfg_key" ]; then
+        WEB_KEY="$cfg_key"
+        if [ "$(cat "$KEY_FILE" 2>/dev/null)" != "$cfg_key" ]; then
+            mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+            printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
+            chmod 600 "$KEY_FILE" 2>/dev/null || true
+        fi
+    else
+        if [ -s "$KEY_FILE" ]; then
+            WEB_KEY="$(tr -d ' \r\n' < "$KEY_FILE" 2>/dev/null)"
+        fi
+        if [ -z "$WEB_KEY" ]; then
+            WEB_KEY="$DEFAULT_WEB_KEY"
+            mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+            printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
+            chmod 600 "$KEY_FILE" 2>/dev/null || true
+        fi
+    fi
+    [ -n "$WEB_KEY" ]
+}
+
+write_access_info() {
+    local lan_ip
+    lan_ip="$(detect_lan_ip)"
+    [ -z "$lan_ip" ] && lan_ip="<NAS-IP>"
+    mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+    cat > "$INFO_FILE" <<EOF
+Magpie 访问信息（本文件由应用在启动时生成，可删除）
+====================================================
+Web 管理界面（点一次即登录，浏览器记住 400 天）：
+    http://${lan_ip}:${PORT}/?k=${WEB_KEY}
+
+网关地址（OpenAI / Anthropic / Gemini 三种协议都支持）：
+    http://${lan_ip}:${GW_PORT}          OpenAI 兼容
+    http://${lan_ip}:${GW_PORT}/v1       OpenAI 兼容（带 /v1）
+    客户端密钥：在 Web 界面 Gateway 页为每个客户端单独创建（不要共用）
+
+数据目录：${TRIM_PKGVAR}
+    供应商 / 密钥 / 订阅登录态 / 路由组都在 ${HOME_DIR} 下
+    Web 界面钥匙：${KEY_FILE}（删除后重启会重新生成）
+日志：${LOG_FILE}
+
+常用命令（SSH）：
+    sudo -u ${APPNAME} HOME=${HOME_DIR} ${BIN} providers
+    sudo -u ${APPNAME} HOME=${HOME_DIR} ${BIN} accounts
+    sudo -u ${APPNAME} HOME=${HOME_DIR} ${BIN} --help
+EOF
+    chmod 600 "$INFO_FILE" 2>/dev/null || true
+}
+
+rotate_log() {
+    if [ -f "$LOG_FILE" ]; then
+        local size
+        size="$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)"
+        if [ "$size" -gt 5242880 ]; then
+            mv -f "$LOG_FILE" "${LOG_FILE}.1" 2>/dev/null || true
+        fi
+    fi
+}
+
+start_service() {
+    if is_running; then
+        # 进程在但界面不通（例如 key 变了）→ 走重启
+        ensure_key
+        service_ready && gateway_ready && exit 0
+        do_stop
+    fi
+
+    mkdir -p "$TRIM_PKGVAR" "$TRIM_PKGTMP" "$HOME_DIR" \
+             "$HOME_DIR/.config" "$HOME_DIR/.cache" "$HOME_DIR/.local/share" "$HOME_DIR/.local/state" 2>/dev/null
+    if [ ! -d "$HOME_DIR" ] || [ ! -w "$HOME_DIR" ]; then
+        HOME_DIR="${TRIM_PKGVAR}/home"
+        mkdir -p "$HOME_DIR" "$HOME_DIR/.config" "$HOME_DIR/.cache" \
+                 "$HOME_DIR/.local/share" "$HOME_DIR/.local/state" 2>/dev/null
+    fi
+
+    for p in "$PORT" "$GW_PORT"; do
+        if port_in_use "$p"; then
+            if port_owner_is_self "$p"; then
+                pkill -f "$BIN" 2>/dev/null
+                sleep 1
+            else
+                echo "Magpie 启动失败：端口 ${p} 已被其他程序占用，请停掉占用程序后重试。" > "$START_ERR_LOG" 2>/dev/null
+                exit 1
+            fi
+        fi
+    done
+
+    if ! ensure_key; then
+        echo "Magpie 启动失败：无法生成 Web 界面密钥（${KEY_FILE} 写入失败）。" > "$START_ERR_LOG" 2>/dev/null
+        exit 1
+    fi
+
+    local lan_ip public_url
+    lan_ip="$(detect_lan_ip)"
+    public_url="http://${lan_ip:-127.0.0.1}:${GW_PORT}"
+
+    rotate_log
+    cd "$TRIM_PKGVAR" || exit 1
+    env -i PATH="/usr/local/bin:/usr/bin:/bin" \
+        HOME="$HOME_DIR" \
+        XDG_CONFIG_HOME="$HOME_DIR/.config" \
+        XDG_CACHE_HOME="$HOME_DIR/.cache" \
+        XDG_DATA_HOME="$HOME_DIR/.local/share" \
+        XDG_STATE_HOME="$HOME_DIR/.local/state" \
+        MAGPIE_ADDR="0.0.0.0:${GW_PORT}" \
+        MAGPIE_WEB_KEY="$WEB_KEY" \
+        MAGPIE_PUBLIC_URL="$public_url" \
+        nohup "$BIN" web --gateway --addr "0.0.0.0:${PORT}" --no-open >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+
+    local ready=0 i
+    for i in $(seq 1 20); do
+        sleep 1
+        if ! is_running; then
+            rm -f "$PID_FILE"
+            if port_in_use "$PORT" || port_in_use "$GW_PORT"; then
+                echo "Magpie 启动失败：端口已被其他程序占用（${PORT}/${GW_PORT}）。" > "$START_ERR_LOG" 2>/dev/null
+            else
+                echo "Magpie 启动失败（进程提前退出），详见 ${LOG_FILE}。" > "$START_ERR_LOG" 2>/dev/null
+            fi
+            exit 1
+        fi
+        if service_ready && gateway_ready; then
+            ready=1
+            break
+        fi
+    done
+
+    if [ "$ready" != "1" ]; then
+        kill "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        echo "Magpie 在 ${PORT}/${GW_PORT} 上未就绪（超时），详见 ${LOG_FILE}。" > "$START_ERR_LOG" 2>/dev/null
+        exit 1
+    fi
+
+    write_access_info
+    exit 0
+}
+
+do_stop() {
+    local pid
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+            local i
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+    # 路径锚定的兜底清理（防 PID 文件丢失后的残留进程）
+    pkill -f "$BIN" 2>/dev/null
+}
+
+case "$1" in
+    start)
+        start_service
+        ;;
+    stop)
+        do_stop
+        exit 0
+        ;;
+    status)
+        ensure_key
+        is_running || exit 3
+        service_ready || exit 4
+        exit 0
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}" > "$START_ERR_LOG" 2>/dev/null
+        exit 1
+        ;;
+esac

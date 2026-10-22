@@ -1,0 +1,6 @@
+dist/
+*.fpk
+*.tgz
+__pycache__/
+*.pyc
+.cache/

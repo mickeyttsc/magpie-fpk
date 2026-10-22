@@ -1,0 +1,286 @@
+name: Build Magpie FPK
+
+# 每次 push 到 main / 手动触发 / 上游巡检 bump 后自动构建 FPK 并发布。
+#
+# ⚠️ 发布职责归属：本 workflow 是 Release 的【唯一】归属方。
+#    auto-update.yml 只做检测 + bump + 提交，不建 Release、不传资产。
+#    发布步骤一律【不带 ref 门禁】（三条触发路径的 github.ref 都是 refs/heads/main，
+#    写成 startsWith(refs/tags/) 会静默跳过发布 —— run 全绿但仓库里永远没有 Release）。
+#
+# 触发路径：
+#   1. push main —— 首次推送 / 手动推送
+#   2. workflow_dispatch —— 手动触发
+#   3. workflow_run —— auto-update.yml 完成后接力（GITHUB_TOKEN 推送不触发 push 事件）
+#
+# workflow_run 每次巡检完成都会触发（包括「上下游一致、什么都没改」那次），
+# 因此 gate job 用「本仓库是否已有该版本 Release」当幂等键：已有 → 跳过，
+# 没有（含上次构建失败没留下 Release）→ 构建（自愈）。
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（形如 0.1.1318-1；留空则用 manifest 中的版本）'
+        required: false
+        default: ''
+  workflow_run:
+    workflows: ["Auto-update upstream versions"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-fpk-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: "magpie"
+  MANIFEST_FILE: "manifest"
+
+jobs:
+  # ── 前置门禁：判断「这次到底要不要构建」 ──
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Decide whether to build
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' ')"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "manifest 版本: ${VERSION}   触发事件: ${{ github.event_name }}"
+
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            echo "非 workflow_run 触发（push / 手动）→ 构建"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" || echo 000)"
+          if [ "$CODE" = "200" ]; then
+            echo "v${VERSION} 已有 Release → 跳过构建（避免白跑并覆盖附件）"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v${VERSION} 尚无 Release（HTTP ${CODE}）→ 需要构建"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-fpk:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 敏感信息门禁：这个仓库是公开的，凭据/内网地址一旦进历史就撤不回来
+      - name: Scan for secrets / private environment info
+        run: |
+          chmod +x scripts/scan-secrets.sh
+          ./scripts/scan-secrets.sh
+
+      # ── 硬门禁 1：开发者(maintainer) 必须始终是上游；打包者(distributor) 必须是 Mickey
+      - name: Verify manifest packager identity
+        run: |
+          set -euo pipefail
+          get() { grep "^$1[[:space:]]*=" manifest | head -1 | sed 's/.*=[[:space:]]*//' | tr -d '"' | tr -d ' '; }
+          M="$(get maintainer)";  MU="$(get maintainer_url)"
+          D="$(get distributor)"; DU="$(get distributor_url)"
+          echo "manifest: 开发者(maintainer)=$M  打包者(distributor)=$D"
+          if [ "$M" != "yetone" ]; then
+            echo "::error:: maintainer(开发者) 应为上游 yetone，实际=$M"
+            exit 1
+          fi
+          if [ "$D" != "Mickey" ]; then
+            echo "::error:: distributor(打包者) 应为 Mickey，实际=$D"
+            exit 1
+          fi
+          case "$DU" in
+            *mickeyttsc/*) ;;
+            *) echo "::error:: distributor_url 未指向本 fork: $DU"; exit 1 ;;
+          esac
+          case "$MU" in
+            *yetone/magpie*) ;;
+            *) echo "::error:: maintainer_url 未指向上游开发者: $MU"; exit 1 ;;
+          esac
+          echo "✅ 开发者=$M（上游）  打包者=$D（本 fork）"
+
+      # ── 硬门禁 2：manifest 字段完整性（无重复 + 必需字段齐全）
+      - name: Verify manifest fields
+        run: |
+          set -euo pipefail
+          DUP="$(awk -F= '/^[a-z_]+[[:space:]]*=/{gsub(/[[:space:]]/,"",$1); print $1}' manifest | sort | uniq -d)"
+          if [ -n "$DUP" ]; then
+            echo "::error:: manifest 存在重复字段: $DUP"
+            exit 1
+          fi
+          for f in appname version display_name platform source maintainer maintainer_url \
+                   distributor distributor_url desktop_uidir desktop_applaunchname; do
+            grep -qE "^${f}[[:space:]]*=" manifest || { echo "::error:: manifest 缺必需字段: $f"; exit 1; }
+          done
+          echo "✅ manifest 字段完整且无重复"
+
+      - name: Set timezone
+        run: sudo timedatectl set-timezone "Asia/Shanghai"
+
+      - name: Determine target version
+        id: target_version
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+            echo "使用输入的版本号：$TARGET_VERSION"
+          else
+            TARGET_VERSION="$(grep '^version' manifest | awk -F'=' '{print $2}' | tr -d ' ')"
+            echo "使用 manifest 版本号：$TARGET_VERSION"
+          fi
+          if ! printf '%s' "$TARGET_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+            echo "::error:: 版本号 '$TARGET_VERSION' 格式非法，应形如 0.1.1318-1"
+            exit 1
+          fi
+          echo "target_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+
+      # fnpack 为飞牛官方打包工具。CI 网络可能无法访问其 CDN，设为「可选」：
+      # 下载失败时 build-fpk.sh 自动回退到纯 tar+gzip 构建（已验证路径）。
+      - name: Install fnpack (optional; falls back to tar+gzip)
+        continue-on-error: true
+        run: |
+          set +e
+          URL="https://static2.fnnas.com/fnpack/fnpack-1.2.1-linux-amd64"
+          for i in 1 2 3; do
+            echo "尝试下载 fnpack ($i/3)..."
+            if curl -fsSL "$URL" -o fnpack \
+               && chmod +x fnpack \
+               && mv fnpack /usr/local/bin/ \
+               && command -v fnpack >/dev/null; then
+              echo "fnpack 就绪"
+              exit 0
+            fi
+            rm -f fnpack
+            sleep 3
+          done
+          echo "::warning:: fnpack 不可用，将使用纯 tar+gzip 兜底构建"
+
+      - name: Build FPK
+        env:
+          # 想用自己的 Web 界面 key：在仓库 Settings → Variables 里加 MAGPIE_WEB_KEY。
+          # 不设则用 config/web-key.env 里的默认值。注意 Release 附件公开可下载，
+          # 包内 key 谁都能解包读出，别把它当能对外网暴露的秘密。
+          MAGPIE_WEB_KEY: ${{ vars.MAGPIE_WEB_KEY }}
+        run: |
+          set -euo pipefail
+          bash scripts/build-fpk.sh dist
+          ls -la dist/
+
+      # ── 硬门禁 3：产物结构 + 必需内容存在性（本机与 CI 共用同一份脚本）
+      - name: Verify FPK structure and required contents
+        run: |
+          set -euo pipefail
+          bash scripts/verify-fpk-gates.sh \
+            "dist/magpie-${{ steps.target_version.outputs.target_version }}.fpk"
+
+      # 额外生成固定文件名，便于「总是下载最新版」
+      - name: Copy to rolling asset name
+        run: |
+          set -euo pipefail
+          cp "dist/magpie-${{ steps.target_version.outputs.target_version }}.fpk" \
+             "dist/magpie.fpk"
+
+      - name: Upload FPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: magpie-fpk
+          path: dist/*.fpk
+          retention-days: 30
+
+      # ⚠️ 本步骤【不带 ref 门禁】（见文件头注释）
+      - name: Publish rolling release (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest FPK (auto-build)"
+          prerelease: true
+          overwrite: true
+          files: dist/magpie.fpk
+          body: |
+            Magpie for fnOS — 滚动最新版（每次构建覆盖）
+
+            - FPK 版本：`${{ steps.target_version.outputs.target_version }}`
+            - 提交：`${{ github.sha }}`
+
+            > 固定版本请从对应版本 tag 的 Release 下载 `magpie-<版本>.fpk`。
+
+      - name: Publish stable release
+        run: |
+          set -euo pipefail
+          MG_VER="$(grep -E '^MAGPIE_VERSION=' config/upstream/magpie.env | cut -d= -f2)"
+          cat > /tmp/relnotes.md <<'NOTE'
+          Magpie for fnOS — 稳定版 v${{ steps.target_version.outputs.target_version }}
+
+          **打包追踪的上游版本**（由 auto-update.yml 自动对齐）：`yetone/magpie __MG__`
+
+          ## 说明
+          - 跟随上游 yetone/magpie 自动构建，产物经 sha256 固定值校验，静态链接、零运行时依赖。
+          - Web 管理界面 `http://<NAS-IP>:3430`（图标入口已内置 key，点桌面图标免登录）。
+          - 网关 `http://<NAS-IP>:3425`，同时兼容 OpenAI / Anthropic / Gemini 协议；客户端 key 在界面 Gateway 页创建。
+          - 安装后完整访问信息见应用数据目录 `access-info.txt`。
+
+          ## 安装
+          飞牛应用中心 → 手动安装 → 选择附件 `magpie-${{ steps.target_version.outputs.target_version }}.fpk`。
+          NOTE
+          sed -i "s/__MG__/${MG_VER}/" /tmp/relnotes.md
+          cat /tmp/relnotes.md
+        # 说明生成与发布分离，便于排错时先看文案
+
+      - name: Upload stable release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.target_version.outputs.target_version }}
+          name: "Magpie v${{ steps.target_version.outputs.target_version }}"
+          prerelease: false
+          overwrite: true
+          files: dist/magpie-${{ steps.target_version.outputs.target_version }}.fpk
+          body_path: /tmp/relnotes.md
+
+      # 验收标准是 Releases 页有附件且可下载，不是 workflow 显示 success（静默失败不会标红）
+      - name: Verify release asset is downloadable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-release-asset.py \
+            "v${{ steps.target_version.outputs.target_version }}" \
+            "dist/magpie-${{ steps.target_version.outputs.target_version }}.fpk"
+
+      - name: Build Summary
+        run: |
+          set -euo pipefail
+          SHA="$(sha256sum "dist/magpie-${{ steps.target_version.outputs.target_version }}.fpk" | awk '{print $1}')"
+          {
+            echo "### ✅ 构建完成"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|------|"
+            echo "| 版本 | v${{ steps.target_version.outputs.target_version }} |"
+            echo "| FPK 文件名 | magpie-${{ steps.target_version.outputs.target_version }}.fpk |"
+            echo "| sha256 | \`${SHA}\` |"
+            echo ""
+            echo "滚动最新版见 Release **latest** 的附件 \`magpie.fpk\`。"
+          } >> $GITHUB_STEP_SUMMARY

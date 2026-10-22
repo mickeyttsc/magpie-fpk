@@ -1,0 +1,96 @@
+name: Auto-update upstream versions
+
+# 自动跟踪上游 yetone/magpie 并触发重建
+# （只负责「检测 + bump + 提交」，不负责发布；Release 由 build.yml 独占）。
+#
+# 为什么「长驻轮询」而不是普通 cron：GitHub 对公共仓的 on: schedule 不可靠
+# （实测守约率低、动辄延迟数十分钟）。改为单 job 内每 5 分钟 tick 一次、
+# 跑满 5.5h 后自续跑（dispatch 自己），cron 每小时一次仅作断链兜底。
+# concurrency 排队保证链路无缝；tick 幂等，冗余无害。
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # 兜底点火（自续跑是主驱动）
+  workflow_dispatch:
+    inputs:
+      single_tick:
+        description: '只跑一次巡检就退出（快速验证链路）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-update-upstream
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Poll upstream continuously
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINGLE_TICK: ${{ inputs.single_tick }}
+        run: |
+          set -uo pipefail
+          chmod +x scripts/auto-update-tick.sh
+
+          # 快速验证模式：只跑一次就退出
+          if [ "${SINGLE_TICK}" = "true" ]; then
+            echo "single_tick=true → 只跑一次巡检"
+            bash scripts/auto-update-tick.sh
+            exit 0
+          fi
+
+          TICK_INTERVAL=300
+          JOB_SECONDS=19800
+          START=$(date +%s)
+
+          # 自续跑：退出前先点火下一棒（cron 降级为断链兜底）
+          arm_next() {
+            if [ -z "${GITHUB_TOKEN:-}" ] || [ -z "${GITHUB_REPOSITORY:-}" ]; then
+              echo "本地模式：跳过自续跑"
+              return 0
+            fi
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/auto-update.yml/dispatches" \
+              -d '{"ref":"main"}' 2>/dev/null || echo 000)
+            if [ "${CODE}" = "204" ]; then
+              echo "✅ 已点火下一棒（自续跑，HTTP 204）"
+            else
+              echo "WARN 自续跑点火失败 HTTP ${CODE}（将由每小时 cron 兜底重启）"
+            fi
+          }
+
+          echo "长驻轮询启动：每 ${TICK_INTERVAL}s 巡检一次，最长 ${JOB_SECONDS}s"
+          i=0
+          while :; do
+            i=$((i+1))
+            echo "──────── tick #${i} ────────"
+            bash scripts/auto-update-tick.sh || echo "tick 返回非零，继续（长驻不因单次失败中断）"
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START))
+            if [ "${ELAPSED}" -ge "${JOB_SECONDS}" ]; then
+              echo "已达本次 job 时限（${ELAPSED}s），点火下一棒后正常退出"
+              arm_next
+              break
+            fi
+            sleep "${TICK_INTERVAL}"
+          done
+          echo "长驻轮询结束：共 ${i} 次 tick"

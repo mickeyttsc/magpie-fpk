@@ -15,16 +15,28 @@ name: Build Magpie FPK
 # workflow_run 每次巡检完成都会触发（包括「上下游一致、什么都没改」那次），
 # 因此 gate job 用「本仓库是否已有该版本 Release」当幂等键：已有 → 跳过，
 # 没有（含上次构建失败没留下 Release）→ 构建（自愈）。
+# 该判重对【所有】触发路径生效（含 push）：只改文档的提交不会白跑构建，
+# 也不会覆盖已发布的同版本附件。确需覆盖同版本 → workflow_dispatch + force_rebuild=true。
 
 on:
   push:
     branches:
       - main
-  # 手动触发只做「重新构建当前 manifest 版本」。
+  # 手动触发 = 「重新构建当前 manifest 版本」。默认会判重（已有同版本 Release 就跳过），
+  # 确实想覆盖同版本附件时勾 force_rebuild。
   # ⚠️ 不提供 version 入参：build-fpk.sh 的版本号只取自 manifest，
   #    传一个不同版本会让产物名与后续步骤要找的名字不一致（必然失败）。
   #    要换版本号 → 改 manifest 后 push。
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重建并覆盖同版本 Release 附件（默认否）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
   workflow_run:
     workflows: ["Auto-update upstream versions"]
     types: [completed]
@@ -61,8 +73,13 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "manifest 版本: ${VERSION}   触发事件: ${{ github.event_name }}"
 
-          if [ "${{ github.event_name }}" != "workflow_run" ]; then
-            echo "非 workflow_run 触发（push / 手动）→ 构建"
+          # 判重键 = 「本仓库是否已有该版本 Release」。
+          # 对【所有】触发路径都生效：push 只改文档时不该白跑一次构建，
+          # 更不该把已发布的同版本附件覆盖掉（版本号会失去意义）。
+          # 自愈仍然成立：构建失败没留下 Release → 下次任何触发都会重建。
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+          if [ "$FORCE" = "true" ]; then
+            echo "force_rebuild=true → 跳过判重，强制重建"
             echo "build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -71,7 +88,7 @@ jobs:
             -H "Authorization: token ${GITHUB_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" || echo 000)"
           if [ "$CODE" = "200" ]; then
-            echo "v${VERSION} 已有 Release → 跳过构建（避免白跑并覆盖附件）"
+            echo "v${VERSION} 已有 Release → 跳过构建（要覆盖请用 workflow_dispatch + force_rebuild=true）"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "v${VERSION} 尚无 Release（HTTP ${CODE}）→ 需要构建"

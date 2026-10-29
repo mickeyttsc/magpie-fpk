@@ -1,5 +1,5 @@
 appname               = magpie
-version               = 0.1.2093-1
+version               = 0.1.2094-1
 display_name          = Magpie
 desc                  = Magpie 把所有 AI 编程 Agent（Claude Code / Codex / Gemini CLI / OpenCode）的模型与供应商收在一处：本地网关（默认 3425）同时兼容 OpenAI / Anthropic / Gemini 协议并互相转换，带路由组与额度耗尽自动切换，自带 Web 管理界面（默认 3430）。本包跟随上游 yetone/magpie 自动构建。
 maintainer            = yetone

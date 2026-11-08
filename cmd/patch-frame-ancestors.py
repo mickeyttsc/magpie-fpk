@@ -24,6 +24,7 @@
   放宽后，所有社区插件（无论以后新安装什么插件）的样式、图片、JS 均可正常执行，握手秒完成。
 """
 
+import os
 import sys
 
 PATCHES = [
@@ -68,15 +69,32 @@ def main(argv):
         print("patch-frame-ancestors: length changed, aborting", file=sys.stderr)
         return 1
 
+    # ⚠️ 必须「临时文件 + 同目录 rename」写入，不能原地 r+b：
+    #   magpie 自更新后新二进制正在被运行中的进程执行，原地写会 ETXTBSY（Text file busy）
+    #   静默失败 → 补丁丢失 → 「更新完就崩」的实测根因。
+    #   rename 只换目录项：运行中进程继续用旧 inode（内存映射不变，不会崩），
+    #   磁盘上的文件已是打过补丁的版本，下一次重启（含 magpie 自己的热重启）即生效。
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".magpie-patch-", dir=d)
     try:
-        with open(path, "r+b") as f:
-            f.truncate(0)
+        with os.fdopen(fd, "wb") as f:
             f.write(patched)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, os.stat(path).st_mode)
+        os.replace(tmp, path)
     except OSError as err:
-        print("patch-frame-ancestors: cannot write %s: %s" % (path, err))
-        return 0
+        print("patch-frame-ancestors: cannot write %s: %s (fallback in-place)" % (path, err))
+        try:
+            with open(path, "r+b") as f:
+                f.truncate(0)
+                f.write(patched)
+        except OSError as err2:
+            print("patch-frame-ancestors: in-place also failed: %s" % err2)
+            return 0
 
-    print("patch-frame-ancestors: successfully applied all patches (size unchanged: %d bytes)" % len(patched))
+    print("patch-frame-ancestors: patched via rename (size unchanged: %d bytes)" % len(patched))
     return 0
 
 

@@ -53,16 +53,31 @@ def patch_file(path):
         if len(patched) != len(data):
             return False
 
-        with open(path, "r+b") as f:
-            f.seek(0)
-            f.write(patched)
-            f.truncate(len(patched))
-            f.flush()
-            os.fsync(f.fileno())
+        # ⚠️ 临时文件 + 同目录 rename，绝不原地 r+b 写：
+        #   magpie 自更新热重启后，新二进制正被运行中的进程执行，原地写必然
+        #   ETXTBSY（Text file busy）静默失败 —— 这正是「更新完就崩」的实测根因。
+        #   rename 只换目录项，运行中进程继续用旧 inode 不受影响，磁盘文件已带补丁，
+        #   下一次重启即生效。
+        import tempfile
+        d = os.path.dirname(path)
+        fd, tmp = tempfile.mkstemp(prefix=".magpie-patch-", dir=d)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(patched)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, os.stat(path).st_mode)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
 
-        print(f"[magpie-watcher] Successfully auto-patched: {path} ({size} bytes)", flush=True)
+        print(f"[magpie-watcher] Successfully auto-patched via rename: {path} ({size} bytes)", flush=True)
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 

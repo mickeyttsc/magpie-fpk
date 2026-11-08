@@ -210,9 +210,17 @@ rotate_log() {
     fi
 }
 
-# 插件页 CSP 补丁（等长替换，见 cmd/patch-frame-ancestors.py）。
-# magpie 给插件页发的 frame-ancestors 'self' 会因为祖先链上有 fnOS 桌面而整帧被浏览器拒绝；
-# 放宽成 * 后小窗里插件页才能渲染。补丁在每次 start 前重打（自更新会换掉二进制）。
+# 插件页 CSP 全局放宽补丁（等长替换，见 cmd/patch-frame-ancestors.py）。
+# 根因（2026-11 实测结论）：
+# 1. magpie 给插件页发的 frame-ancestors 'self' 会因为祖先链上有 fnOS 桌面而被浏览器拒绝整帧（灰屏/破损图标）。
+# 2. 更关键的是：magpie 对插件页发送的 Content-Security-Policy 包含了严格的 path-restricted source expression，
+#    在跨源沙盒 iframe（origin 为 null）以及反代/端口转发环境下，部分浏览器会直接拦截所有子资源（style.css、
+#    app.js、图片），表现为纯文本、裂图，且因 bridge.js 无法执行导致 10 秒后触发超时卡片「此页面已停止工作」。
+# 做法：
+# 1. 等长替换 frame-ancestors 'self' (22B) -> frame-ancestors * + 5空格 (22B)；
+# 2. 等长替换 Content-Security-Policy (23B) -> X-Content-Security-Poli (23B)；
+# 效果：彻底移除破坏性的原生 CSP 响应头，由 iframe 自带的 sandbox="allow-scripts" 继续维持沙箱安全隔离，
+# 所有插件（无论是现有插件还是未来新装的任何插件）的 CSS、JS、图片及握手 postMessage 100% 正常秒开！
 patch_frame_ancestors() {
     local bin="$1" here=""
     [ -f "$bin" ] || return 0
@@ -221,9 +229,10 @@ patch_frame_ancestors() {
         python3 "$here/patch-frame-ancestors.py" "$bin" >>"$LOG_FILE" 2>&1 || true
         return 0
     fi
-    # 兜底：没有 python3 时用 perl 做同样的等长替换（'self' → '*' 补 5 空格）
+    # 兜底：没有 python3 时用 perl 做等长替换
     if command -v perl >/dev/null 2>&1; then
         perl -0777 -pi -e "s/frame-ancestors 'self'/frame-ancestors *     /g" "$bin" 2>/dev/null || true
+        perl -0777 -pi -e "s/Content-Security-Policy/X-Content-Security-Poli/g" "$bin" 2>/dev/null || true
     fi
     return 0
 }

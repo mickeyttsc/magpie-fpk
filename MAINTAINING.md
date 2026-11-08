@@ -71,6 +71,31 @@ bash scripts/upgrade-local.sh "<你的可写目录>/magpie-<ver>.fpk"
 
 5. 验三样：`appcenter-cli status magpie` = running；`ss -ltn` 两个端口都在；`/?k=<key>` 返 303/200 且 `/v1/models` 本机 200、局域网无 key 401。
 
+## 本包对上游二进制的唯一补丁：插件页 CSP（`cmd/patch-frame-ancestors.py`）
+
+**症状**：从 fnOS 桌面点图标进 Magpie（小窗 = iframe），插件分组里的插件页（如「WorkBuddy 任务」）
+内容区全是灰底 + 一个「🚫/破损文档」图标，而 Magpie 其它页面一切正常。
+
+**根因**：magpie 给插件页（`/_magpie/plugin/<token>/index.html`）发的响应头含
+`Content-Security-Policy: …; frame-ancestors 'self'`。`frame-ancestors` 校验的是**整条祖先链**，
+小窗场景是三层嵌套：`fnOS 桌面(非 self) → iframe Magpie 主界面(无 CSP) → iframe 插件页`，
+祖先链上出现非 self 的源 → 浏览器直接拒绝渲染该帧。主界面因为没发 CSP 所以正常。
+上游把这段策略写成常量、无开关（二进制里 3 处）。
+
+**做法**：等长替换 `frame-ancestors 'self'`(22B) → `frame-ancestors *` + 5 空格(22B)，
+字节数不变、不移动任何偏移。`sandbox`/`default-src 'none'`/`connect-src 'none'` 全部保留，
+插件页依然无网络、无 API、无 cookie；放宽的只是「谁能嵌这一页」。
+
+**何时打**：`cmd/main` 在**拉起进程之前**（`rotate_log` 前）无条件校验并重打——因为
+magpie 会自更新替换 `bin/magpie`，补丁会随新文件丢失。二进制在跑时是 `Text file busy`，
+所以补丁点必须放在 `do_stop`/端口清理之后，不能放在函数开头。
+
+**另外**：本机已把 magpie 自身的「自动下载更新」关掉（设置项 `noAutoDownload`），
+避免它半夜换掉二进制让补丁失效；升级走本 fpk 的 CI 出包 → 应用中心升级。
+
+**验证**：`curl -sD- -o /dev/null <插件页 URL> | grep -i content-security` 里应是
+`frame-ancestors *`；再从 fnOS 桌面小窗打开该插件页，卡片正常渲染（不再是灰块）。
+
 ## 开发者 / 打包者
 
 - 开发者（上游）：yetone

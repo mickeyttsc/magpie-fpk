@@ -210,6 +210,24 @@ rotate_log() {
     fi
 }
 
+# 插件页 CSP 补丁（等长替换，见 cmd/patch-frame-ancestors.py）。
+# magpie 给插件页发的 frame-ancestors 'self' 会因为祖先链上有 fnOS 桌面而整帧被浏览器拒绝；
+# 放宽成 * 后小窗里插件页才能渲染。补丁在每次 start 前重打（自更新会换掉二进制）。
+patch_frame_ancestors() {
+    local bin="$1" here=""
+    [ -f "$bin" ] || return 0
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    if [ -n "$here" ] && [ -f "$here/patch-frame-ancestors.py" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$here/patch-frame-ancestors.py" "$bin" >>"$LOG_FILE" 2>&1 || true
+        return 0
+    fi
+    # 兜底：没有 python3 时用 perl 做同样的等长替换（'self' → '*' 补 5 空格）
+    if command -v perl >/dev/null 2>&1; then
+        perl -0777 -pi -e "s/frame-ancestors 'self'/frame-ancestors *     /g" "$bin" 2>/dev/null || true
+    fi
+    return 0
+}
+
 start_service() {
     if is_running; then
         # 进程在但界面不通（例如 key 变了）→ 走重启
@@ -246,6 +264,11 @@ start_service() {
     local lan_ip public_url
     lan_ip="$(detect_lan_ip)"
     public_url="http://${lan_ip:-127.0.0.1}:${GW_PORT}"
+
+    # 拉起进程前重打插件页 CSP 补丁：magpie 会自更新替换 bin/magpie，补丁会随之丢失。
+    # 必须放在 do_stop/端口清理之后——进程在跑时二进制是「Text file busy」，写不进去。
+    # 详见 cmd/patch-frame-ancestors.py 顶部说明。
+    patch_frame_ancestors "$BIN"
 
     rotate_log
     cd "$TRIM_PKGVAR" || exit 1

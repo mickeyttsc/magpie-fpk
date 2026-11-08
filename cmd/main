@@ -54,6 +54,7 @@ PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
 LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
 INFO_FILE="${TRIM_PKGVAR}/access-info.txt"
 START_ERR_LOG="${TRIM_TEMP_LOGFILE:-${TRIM_PKGTMP}/start.log}"
+WATCHER_PID_FILE="${TRIM_PKGVAR}/${APPNAME}-watcher.pid"
 
 WEB_KEY=""
 
@@ -166,25 +167,10 @@ ensure_key() {
     return 1
 }
 
-# 确保持久化关闭内部自动更新（防夜间私自拉取上游未打补丁的原版二进制覆盖）
+# 确保持久化关闭内部自动更新（已改为由 magpie-watcher 守护，故可正常开启更新）
+# 如果用户希望允许 magpie 自动更新，保持默认或用户自选，无需强行关闭
 ensure_no_auto_update() {
-    local settings_file="${HOME_DIR}/.config/magpie/settings.json"
-    [ -d "${HOME_DIR}/.config/magpie" ] || mkdir -p "${HOME_DIR}/.config/magpie" 2>/dev/null || true
-    if [ -f "$settings_file" ] && command -v python3 >/dev/null 2>&1; then
-        python3 -c "
-import json, sys
-p = '$settings_file'
-try:
-    with open(p, 'r') as f: s = json.load(f)
-    if not s.get('noAutoUpdate') or not s.get('noAutoDownload'):
-        s['noAutoUpdate'] = True
-        s['noAutoDownload'] = True
-        s['autoRestart'] = False
-        s['noUpdatePill'] = True
-        with open(p, 'w') as f: json.dump(s, f, indent=2, ensure_ascii=False)
-except Exception: pass
-" 2>/dev/null || true
-    fi
+    return 0
 }
 
 write_access_info() {
@@ -341,10 +327,35 @@ start_service() {
     fi
 
     write_access_info
+
+    # 启动后台二进制补丁守护监听器（确保允许自动更新的同时，下载暂存和替换的二进制立即自动打补丁）
+    start_watcher
+
     exit 0
 }
 
+start_watcher() {
+    local here=""
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    stop_watcher
+    if [ -n "$here" ] && [ -f "$here/magpie-watcher.py" ] && command -v python3 >/dev/null 2>&1; then
+        nohup python3 "$here/magpie-watcher.py" "${TRIM_APPDEST}/bin" >> "$LOG_FILE" 2>&1 &
+        echo $! > "$WATCHER_PID_FILE"
+    fi
+}
+
+stop_watcher() {
+    if [ -f "$WATCHER_PID_FILE" ]; then
+        local wpid
+        wpid="$(cat "$WATCHER_PID_FILE" 2>/dev/null)"
+        [ -n "$wpid" ] && kill "$wpid" 2>/dev/null || true
+        rm -f "$WATCHER_PID_FILE"
+    fi
+    pkill -f "magpie-watcher.py" 2>/dev/null || true
+}
+
 do_stop() {
+    stop_watcher
     local pid
     if [ -f "$PID_FILE" ]; then
         pid="$(cat "$PID_FILE" 2>/dev/null)"

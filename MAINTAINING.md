@@ -96,6 +96,11 @@ magpie 会自更新替换 `bin/magpie`，补丁会随新文件丢失。二进制
 **验证**：`curl -sD- -o /dev/null <插件页 URL> | grep -i content-security` 里应是
 `frame-ancestors *`；再从 fnOS 桌面小窗打开该插件页，卡片正常渲染（不再是灰块）。
 
+**构建与门禁（CI 自动出包）**：
+- `scripts/build-fpk.sh`：在组装阶段直接对 `app/bin/magpie` 应用补丁，确保生成的安装包解包即自带补丁。
+- `scripts/verify-fpk-gates.sh`：新增门禁断言，校验包内二进制必须包含等长补丁。
+- `cmd/main`：在 `start` 阶段调用 `patch_frame_ancestors` 和 `ensure_no_auto_update`，关掉 magpie 自身后台偷偷拉取上游二进制覆盖的行为（`noAutoUpdate: true`、`noAutoDownload: true`），同时启动前自动复检补丁。
+
 ## 开发者 / 打包者
 
 - 开发者（上游）：yetone

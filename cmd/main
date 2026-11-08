@@ -158,12 +158,33 @@ ensure_key() {
         WEB_KEY="$(generate_random_key)"
     fi
 
-    # 持久化落盘
-    mkdir -p "$TRIM_PKGVAR" 2>/dev/null
-    printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null
-    chmod 600 "$KEY_FILE" 2>/dev/null || true
+    if [ -n "$WEB_KEY" ]; then
+        printf '%s\n' "$WEB_KEY" > "$KEY_FILE" 2>/dev/null || return 1
+        chmod 600 "$KEY_FILE" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
 
-    [ -n "$WEB_KEY" ]
+# 确保持久化关闭内部自动更新（防夜间私自拉取上游未打补丁的原版二进制覆盖）
+ensure_no_auto_update() {
+    local settings_file="${HOME_DIR}/.config/magpie/settings.json"
+    [ -d "${HOME_DIR}/.config/magpie" ] || mkdir -p "${HOME_DIR}/.config/magpie" 2>/dev/null || true
+    if [ -f "$settings_file" ] && command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, sys
+p = '$settings_file'
+try:
+    with open(p, 'r') as f: s = json.load(f)
+    if not s.get('noAutoUpdate') or not s.get('noAutoDownload'):
+        s['noAutoUpdate'] = True
+        s['noAutoDownload'] = True
+        s['autoRestart'] = False
+        s['noUpdatePill'] = True
+        with open(p, 'w') as f: json.dump(s, f, indent=2, ensure_ascii=False)
+except Exception: pass
+" 2>/dev/null || true
+    fi
 }
 
 write_access_info() {
@@ -278,6 +299,7 @@ start_service() {
     # 必须放在 do_stop/端口清理之后——进程在跑时二进制是「Text file busy」，写不进去。
     # 详见 cmd/patch-frame-ancestors.py 顶部说明。
     patch_frame_ancestors "$BIN"
+    ensure_no_auto_update
 
     rotate_log
     cd "$TRIM_PKGVAR" || exit 1

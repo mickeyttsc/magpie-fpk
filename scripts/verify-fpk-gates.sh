@@ -65,6 +65,11 @@ case "$BIN_OUT" in
     *) fail "二进制自检失败：'$BIN_OUT' 未包含上游版本 $UP_VER" ;;
 esac
 
+# 插件页 CSP 补丁在位断言（验证打进包里的二进制已解除 CSP 拦截）
+if [ -f "cmd/patch-frame-ancestors.py" ] && command -v python3 >/dev/null 2>&1; then
+    python3 cmd/patch-frame-ancestors.py "$TMP/bin/magpie" --check || fail "包内 bin/magpie 缺少插件页 CSP 等长补丁"
+fi
+
 # ── 5. manifest 字段完整性 / 身份 / 无重复 ──
 DUP="$(awk -F= '/^[a-z_]+[[:space:]]*=/{gsub(/[[:space:]]/,"",$1); print $1}' "$TMP/manifest" | sort | uniq -d)"
 [ -z "$DUP" ] || fail "manifest 存在重复字段: $DUP"

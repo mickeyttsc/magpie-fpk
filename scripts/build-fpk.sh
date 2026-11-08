@@ -79,6 +79,14 @@ fi
 cp "$WORK/$ASSET" "$BUILD_ROOT/app/bin/magpie"
 chmod 755 "$BUILD_ROOT/app/bin/magpie"
 
+# 插件页 CSP 等长补丁（构建期直接打入，开箱即用，无需等到首次启动）
+if [ -f "cmd/patch-frame-ancestors.py" ] && command -v python3 >/dev/null 2>&1; then
+    python3 cmd/patch-frame-ancestors.py "$BUILD_ROOT/app/bin/magpie"
+elif command -v perl >/dev/null 2>&1; then
+    perl -0777 -pi -e "s/frame-ancestors 'self'/frame-ancestors *     /g" "$BUILD_ROOT/app/bin/magpie"
+    perl -0777 -pi -e "s/Content-Security-Policy/X-Content-Security-Poli/g" "$BUILD_ROOT/app/bin/magpie"
+fi
+
 cp "app/ui/config" "$BUILD_ROOT/app/ui/config"
 
 # 图标：四槽位统一 512×512（fnOS 桌面实际拉 icon_64 槽位内容，塞小图会放大发虚）

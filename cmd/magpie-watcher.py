@@ -2,22 +2,18 @@
 """Magpie 二进制与自动更新守护监听器 (magpie-watcher.py)
 
 解决的核心问题：
-  用户希望开启并允许 magpie 自身的正常自动更新（或前端点击更新）。
-  然而 magpie 自动下载新版本落盘（在 bin/.magpie-update/ 或 bin/ 目录下作为 .new / 替换原程序）时，
-  新下载的上游官方二进制是未打补丁的原版，会导致插件页在 fnOS 小窗中再次出现 CSP 拒帧或 10 秒停止工作。
-
-本监听器的职责：
-  随 magpie 服务常驻后台运行，每隔 2~3 秒巡检一次相关目录：
-  1. 一旦检测到后台下载好的新版本预暂存文件（如 .magpie-update/ 下的文件或 magpie.new），
-     立即给该文件打上等长补丁！这样 magpie 在执行 moveIn/重命名替换时，换进去的就已经是打了补丁的新版！
-  2. 一旦检测到正在运行的主二进制 bin/magpie 的 mtime 或文件发生变化（说明刚完成热重启或热更新），
-     若尚未打补丁，则立即自动应用等长补丁。
-  3. 占用资源极低（每次 stat / 检查几个字节，无感知），让自动更新和补丁完美共存！
+  1. 用户开启并允许 magpie 自身的正常自动更新（或前端点击更新）。
+     当 magpie 自动下载新版本落盘替换原程序时，新二进制是未打补丁的原版。
+     本监听器通过原子 rename 自动对新版二进制打补丁，绕开 ETXTBSY。
+  2. 当社区插件（带 page 界面）发生自更新或新安装时，可能恢复为外部相对静态资源。
+     本监听器自动将 page 下的 CSS 和 Logo 图标内联化，确保沙箱 iframe 绝对不丢样式。
 """
 
 import os
 import sys
 import time
+import base64
+import tempfile
 
 PATCHES = [
     (b"frame-ancestors 'self'", b"frame-ancestors *     "),
@@ -30,7 +26,6 @@ def patch_file(path):
         return False
     try:
         size = os.path.getsize(path)
-        # magpie 官方二进制大于 20MB
         if size < 10 * 1024 * 1024:
             return False
 
@@ -53,12 +48,6 @@ def patch_file(path):
         if len(patched) != len(data):
             return False
 
-        # ⚠️ 临时文件 + 同目录 rename，绝不原地 r+b 写：
-        #   magpie 自更新热重启后，新二进制正被运行中的进程执行，原地写必然
-        #   ETXTBSY（Text file busy）静默失败 —— 这正是「更新完就崩」的实测根因。
-        #   rename 只换目录项，运行中进程继续用旧 inode 不受影响，磁盘文件已带补丁，
-        #   下一次重启即生效。
-        import tempfile
         d = os.path.dirname(path)
         fd, tmp = tempfile.mkstemp(prefix=".magpie-patch-", dir=d)
         try:
@@ -81,18 +70,59 @@ def patch_file(path):
         return False
 
 
+def inline_plugin_pages(plugins_dir):
+    if not os.path.isdir(plugins_dir):
+        return
+    try:
+        for root, dirs, files in os.walk(plugins_dir):
+            if os.path.basename(root) == 'page' and 'index.html' in files:
+                index_file = os.path.join(root, 'index.html')
+                style_file = os.path.join(root, 'style.css')
+                logo_file = os.path.join(root, 'logo-mark.png')
+
+                with open(index_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    html = f.read()
+
+                changed = False
+                if 'href="style.css"' in html or "href='style.css'" in html:
+                    if os.path.isfile(style_file):
+                        with open(style_file, 'r', encoding='utf-8', errors='ignore') as f:
+                            css = f.read()
+                        html = html.replace('<link rel="stylesheet" href="style.css">', f'<style>\n{css}\n</style>')
+                        html = html.replace("<link rel='stylesheet' href='style.css'>", f'<style>\n{css}\n</style>')
+                        changed = True
+
+                if 'src="logo-mark.png"' in html or "src='logo-mark.png'" in html:
+                    if os.path.isfile(logo_file):
+                        with open(logo_file, 'rb') as f:
+                            b64 = base64.b64encode(f.read()).decode('ascii')
+                        html = html.replace('src="logo-mark.png"', f'src="data:image/png;base64,{b64}"')
+                        html = html.replace("src='logo-mark.png'", f"src='data:image/png;base64,{b64}'")
+                        changed = True
+
+                if changed:
+                    with open(index_file, 'w', encoding='utf-8') as f:
+                        f.write(html)
+                    print(f"[magpie-watcher] Auto-inlined plugin page: {root}", flush=True)
+    except Exception:
+        pass
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: magpie-watcher.py <magpie_bin_dir>", file=sys.stderr)
+        print("Usage: magpie-watcher.py <magpie_bin_dir> [plugins_dir]", file=sys.stderr)
         return 1
 
     bin_dir = os.path.abspath(sys.argv[1])
+    plugins_dir = sys.argv[2] if len(sys.argv) > 2 else "/vol2/@apphome/magpie/.config/magpie/plugins"
     main_bin = os.path.join(bin_dir, "magpie")
     update_dir = os.path.join(bin_dir, ".magpie-update")
 
     # 首次启动先扫一次
     patch_file(main_bin)
+    inline_plugin_pages(plugins_dir)
 
+    tick = 0
     while True:
         try:
             # 1. 扫描 bin_dir 下的潜在预更新文件
@@ -109,6 +139,11 @@ def main():
 
             # 3. 扫描主程序本身（若刚被替换成未打补丁的新版）
             patch_file(main_bin)
+
+            # 4. 每 10 秒巡检一次插件目录（防止插件更新冲掉内联样式）
+            tick += 1
+            if tick % 5 == 0:
+                inline_plugin_pages(plugins_dir)
 
         except Exception:
             pass
